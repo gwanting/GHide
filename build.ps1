@@ -34,11 +34,22 @@ if (Test-Path $MsysBash) {
     Write-Host "Native DLL copied: $(Join-Path $OutputDirectory 'taskbar_transparency.dll')"
 }
 else {
-    Write-Warning 'MSYS2 not found; taskbar_transparency.dll will not be built. Taskbar transparency (Win11) will be unavailable.'
+    Write-Warning 'MSYS2 not found; taskbar_transparency.dll will not be rebuilt. If a prebuilt native\taskbar_transparency.dll exists it will still be embedded.'
 }
 
 if (Test-Path $outputPath) {
     Remove-Item -LiteralPath $outputPath
+}
+
+# Embed the native DLL into the exe so a single GHide.exe works without
+# shipping a side-by-side DLL. Side-by-side DLL still takes priority at runtime.
+$resourceOptions = ''
+if (Test-Path $nativeDll) {
+    $resourceOptions = " /resource:`"$nativeDll`",GHide.taskbar_transparency.dll"
+    Write-Host "Embedding taskbar_transparency.dll into GHide.exe (single-file distribution)."
+}
+else {
+    Write-Warning 'taskbar_transparency.dll not found; Win11 taskbar transparency will be unavailable and NOT embedded.'
 }
 
 $provider = New-Object Microsoft.CSharp.CSharpCodeProvider
@@ -51,7 +62,7 @@ $parameters.GenerateExecutable = $true
 $parameters.GenerateInMemory = $false
 $parameters.IncludeDebugInformation = $false
 $parameters.OutputAssembly = $outputPath
-$parameters.CompilerOptions = "/target:winexe /optimize+ /win32icon:`"$iconPath`""
+$parameters.CompilerOptions = "/target:winexe /optimize+ /win32icon:`"$iconPath`"" + $resourceOptions
 
 $result = $provider.CompileAssemblyFromFile($parameters, $sourcePath)
 $provider.Dispose()

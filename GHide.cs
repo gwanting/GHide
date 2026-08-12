@@ -12,9 +12,9 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Double-click desktop blank space to toggle desktop icons")]
 [assembly: System.Reflection.AssemblyProduct("GHide")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright © 2026 Wanting. 保留所有权利")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.3.1")]
-[assembly: System.Reflection.AssemblyVersion("1.3.1.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.1.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.3.2")]
+[assembly: System.Reflection.AssemblyVersion("1.3.2.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.2.0")]
 
 internal static class Program
 {
@@ -149,6 +149,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         // 默认开启任务栏全透明(可随时在托盘菜单关闭,退出时自动恢复)。
         TaskbarTransparency.Apply();
+        if (TaskbarTransparency.LastError != null)
+        {
+            trayIcon.ShowBalloonTip(5000, "任务栏透明不可用",
+                TaskbarTransparency.LastError, ToolTipIcon.Warning);
+        }
 
         trayIcon.ShowBalloonTip(2500, "GHide 已启动",
             "双击桌面空白处，可隐藏或显示全部桌面图标。",
@@ -174,9 +179,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         bool enable = !taskbarItem.Checked;
         if (enable)
+        {
             TaskbarTransparency.Apply();
+            if (TaskbarTransparency.LastError != null)
+            {
+                trayIcon.ShowBalloonTip(5000, "任务栏透明不可用",
+                    TaskbarTransparency.LastError, ToolTipIcon.Warning);
+            }
+        }
         else
+        {
             TaskbarTransparency.Restore();
+        }
         taskbarItem.Checked = enable;
     }
 
@@ -360,6 +374,9 @@ internal static class TaskbarTransparency
     private static bool usingInjection;
     private static TaskbarCreatedListener listener;
 
+    // 最近一次 Apply() 的失败原因(成功时为 null),供托盘气泡提示用户。
+    internal static string LastError { get; private set; }
+
     internal static bool IsApplied
     {
         get { return applied; }
@@ -369,9 +386,11 @@ internal static class TaskbarTransparency
     {
         if (applied)
             return;
+        LastError = null;
 
         if (!EnsureSharedState())
         {
+            LastError = "共享内存初始化失败，无法控制任务栏。";
             DiagnosticLog.Write("Taskbar transparency: shared state unavailable.");
             return;
         }
@@ -396,6 +415,7 @@ internal static class TaskbarTransparency
                 DiagnosticLog.Write("Taskbar transparency: injecting into explorer...");
                 if (!InjectIntoExplorer())
                 {
+                    LastError = "DLL 注入 explorer.exe 失败（可能被安全软件拦截）。";
                     DiagnosticLog.Write("Taskbar transparency: DLL injection into explorer failed.");
                     return;
                 }
@@ -415,6 +435,7 @@ internal static class TaskbarTransparency
             usingInjection = false;
             if (!TryApplyAccent())
             {
+                LastError = "任务栏透明应用失败（当前系统任务栏不支持）。";
                 DiagnosticLog.Write("Taskbar transparency: classic taskbar accent apply failed.");
                 return;
             }
@@ -573,11 +594,11 @@ internal static class TaskbarTransparency
             return false;
         }
 
-        string dllPath = Path.Combine(
-            Path.GetDirectoryName(Program.ExecutablePath), "taskbar_transparency.dll");
-        if (!File.Exists(dllPath))
+        string dllPath = ResolveDllPath();
+        if (dllPath == null)
         {
-            DiagnosticLog.Write("Taskbar transparency: DLL missing at " + dllPath);
+            DiagnosticLog.Write("Taskbar transparency: taskbar_transparency.dll unavailable " +
+                "(not next to exe, not embedded in exe).");
             return false;
         }
 
@@ -622,6 +643,75 @@ internal static class TaskbarTransparency
         finally
         {
             NativeMethods.CloseHandle(process);
+        }
+    }
+
+    // ---- DLL 解析:exe 同目录优先,否则从嵌入资源释放 ----
+    private const string DllFileName = "taskbar_transparency.dll";
+    // 与 build.ps1 的 /resource:...,GHide.taskbar_transparency.dll 一致。
+    private const string EmbeddedDllResource = "GHide.taskbar_transparency.dll";
+
+    // 返回用于注入的 DLL 完整路径:
+    // 1) exe 同目录存在则优先使用(用户可放新版本覆盖内置);
+    // 2) 否则从嵌入 exe 的资源释放到 %LOCALAPPDATA%\GHide\ 后使用;
+    // 3) 都没有则返回 null。
+    private static string ResolveDllPath()
+    {
+        string sideBySide = Path.Combine(
+            Path.GetDirectoryName(Program.ExecutablePath), DllFileName);
+        if (File.Exists(sideBySide))
+        {
+            DiagnosticLog.Write("Taskbar transparency: using side-by-side DLL " + sideBySide);
+            return sideBySide;
+        }
+
+        try
+        {
+            using (Stream stream = typeof(TaskbarTransparency).Assembly
+                .GetManifestResourceStream(EmbeddedDllResource))
+            {
+                if (stream == null)
+                {
+                    DiagnosticLog.Write("Taskbar transparency: embedded DLL resource missing.");
+                    return null;
+                }
+
+                byte[] bytes = new byte[stream.Length];
+                int read = 0;
+                while (read < bytes.Length)
+                {
+                    int n = stream.Read(bytes, read, bytes.Length - read);
+                    if (n <= 0)
+                        break;
+                    read += n;
+                }
+
+                string dir = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                    "GHide");
+                Directory.CreateDirectory(dir);
+                string extracted = Path.Combine(dir, DllFileName);
+                if (!File.Exists(extracted) ||
+                    new FileInfo(extracted).Length != bytes.Length)
+                {
+                    try
+                    {
+                        File.WriteAllBytes(extracted, bytes);
+                        DiagnosticLog.Write("Taskbar transparency: extracted embedded DLL to " + extracted);
+                    }
+                    catch (Exception ex)
+                    {
+                        // 旧版 DLL 可能仍被 explorer 占用,覆盖失败时沿用现有文件。
+                        DiagnosticLog.Write("Taskbar transparency: DLL extract failed, reusing existing", ex);
+                    }
+                }
+                return File.Exists(extracted) ? extracted : null;
+            }
+        }
+        catch (Exception ex)
+        {
+            DiagnosticLog.Write("Taskbar transparency: DLL resolve failed", ex);
+            return null;
         }
     }
 

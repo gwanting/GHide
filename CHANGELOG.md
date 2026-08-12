@@ -1,5 +1,15 @@
 # Changelog
 
+## v1.3.2
+
+- 修复：只分发 `GHide.exe` 单个文件时（例如从 GitHub Release 仅下载 exe），Win11 任务栏透明失效的问题。
+  `taskbar_transparency.dll` 现在**内嵌进 exe**（单文件分发）：运行时若 exe 同目录没有 DLL，
+  自动从内嵌资源释放到 `%LOCALAPPDATA%\GHide\` 后注入；同目录放置 DLL 仍优先使用，可自行更新覆盖。
+- 界面改进：任务栏透明应用失败时（DLL 缺失/注入被拦截/系统不支持），托盘气泡会提示具体原因，
+  不再静默失败，便于在他人电脑上排查。
+- `build.ps1` 在编译时自动把 native DLL 嵌入 exe（`/resource:`），MSYS2 缺失但已有现成 DLL 时也会嵌入。
+- 版本号更新为 1.3.2.0。
+
 ## v1.3.1
 
 - 版权署名统一为 **Copyright © 2026 Wanting. 保留所有权利**。

@@ -4,7 +4,7 @@
 
 一个轻量的 Windows 托盘程序。双击桌面空白处即可隐藏全部桌面图标，再次双击恢复显示；程序运行时底部任务栏自动变为全透明。
 
-当前版本：**v1.3.1**（版权署名统一为 Copyright © 2026 Wanting. 保留所有权利）
+当前版本：**v1.3.2**（v1.3.2 起 `taskbar_transparency.dll` 已内嵌进 exe，单个 `GHide.exe` 即可完整使用，含 Win11 任务栏透明）
 
 ## 使用方法
 
@@ -45,10 +45,11 @@ Explorer/COM 查询，桌面命中测试直接限定到桌面列表，并在每�
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-构建结果位于 `dist\GHide.exe`，同时会生成任务栏透明的注入模块
-`dist\taskbar_transparency.dll`（两者需放在同一目录）。构建主程序使用 Windows 自带的
-C# 编译能力；编译 `taskbar_transparency.dll` 需要 [MSYS2](https://www.msys2.org/)
-（MinGW-w64 + cppwinrt），首次构建会自动生成 C++/WinRT 投影头。
+构建结果位于 `dist\GHide.exe`。`taskbar_transparency.dll` 会**内嵌进 exe**（单文件分发），
+因此只拷贝/下载 `GHide.exe` 一个文件即可完整使用（含 Win11 任务栏透明）；
+若在 exe 同目录放置 `taskbar_transparency.dll`，运行时将优先使用同目录版本（可自行更新覆盖）。
+构建主程序使用 Windows 自带的 C# 编译能力；编译 `taskbar_transparency.dll` 需要
+[MSYS2](https://www.msys2.org/)（MinGW-w64 + cppwinrt），首次构建会自动生成 C++/WinRT 投影头。
 
 运行系统测试（会短暂切换并恢复桌面图标）：
 
