@@ -12,9 +12,9 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Double-click desktop blank space to toggle desktop icons")]
 [assembly: System.Reflection.AssemblyProduct("GHide")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright © 2026 Wanting. 保留所有权利")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.3.2")]
-[assembly: System.Reflection.AssemblyVersion("1.3.2.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.2.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.3.3")]
+[assembly: System.Reflection.AssemblyVersion("1.3.3.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.3.0")]
 
 internal static class Program
 {
@@ -50,6 +50,8 @@ internal static class Program
             };
             DiagnosticLog.Write("Application started. OS=" + Environment.OSVersion +
                 ", Version=" + typeof(Program).Assembly.GetName().Version);
+            // 开机自启项若仍指向旧版本/已删除路径（升级换目录后常见），启动时自动刷新为当前 exe。
+            StartupManager.RefreshStartupPath();
             using (TrayApplicationContext context = new TrayApplicationContext())
             {
                 Application.Run(context);
@@ -332,6 +334,56 @@ internal static class StartupManager
             else
                 key.DeleteValue(Program.RunValueName, false);
         }
+    }
+
+    // 程序启动时调用：若开机自启项已存在，但其指向的路径与当前 exe 不一致
+    // （升级换目录、旧版本目录被删除等导致开机找不到程序），自动刷新为当前 exe 路径。
+    // 未勾选开机自启时不做任何事，不会擅自添加启动项。
+    internal static void RefreshStartupPath()
+    {
+        try
+        {
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RunKey, false))
+            {
+                if (key == null || key.GetValue(Program.RunValueName) == null)
+                    return;
+            }
+
+            string currentPath = Program.ExecutablePath;
+            using (RegistryKey key = Registry.CurrentUser.OpenSubKey(RunKey, true))
+            {
+                if (key == null)
+                    return;
+                string stored = key.GetValue(Program.RunValueName) as string;
+                if (stored == null)
+                    return;
+
+                string storedPath = ParseStartupPath(stored);
+                if (storedPath == null ||
+                    string.Equals(storedPath, currentPath, StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                key.SetValue(Program.RunValueName, "\"" + currentPath + "\"");
+                DiagnosticLog.Write("Startup path refreshed: '" + storedPath + "' -> '" + currentPath + "'");
+            }
+        }
+        catch (Exception ex)
+        {
+            DiagnosticLog.Write("Startup path refresh failed", ex);
+        }
+    }
+
+    // 解析 Run 键值中的 exe 路径：支持 "C:\path\app.exe" 及带参数的 "C:\path\app.exe" -arg 两种格式。
+    private static string ParseStartupPath(string value)
+    {
+        string trimmed = value.Trim();
+        if (trimmed.Length >= 2 && trimmed[0] == '"')
+        {
+            int end = trimmed.IndexOf('"', 1);
+            return end < 0 ? null : trimmed.Substring(1, end - 1);
+        }
+        int space = trimmed.IndexOf(' ');
+        return space < 0 ? trimmed : trimmed.Substring(0, space);
     }
 }
 
