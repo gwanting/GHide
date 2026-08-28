@@ -12,9 +12,9 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Double-click desktop blank space to toggle desktop icons")]
 [assembly: System.Reflection.AssemblyProduct("GHide")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright © 2026 Wanting. 保留所有权利")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.3.3")]
-[assembly: System.Reflection.AssemblyVersion("1.3.3.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.3.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.3.4")]
+[assembly: System.Reflection.AssemblyVersion("1.3.4.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.4.0")]
 
 internal static class Program
 {
@@ -119,6 +119,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly ToolStripMenuItem taskbarItem;
     private readonly ToolStripMenuItem startupItem;
     private readonly DesktopMouseWatcher watcher;
+    private readonly System.Windows.Forms.Timer startupTransparencyTimer;
 
     internal TrayApplicationContext()
     {
@@ -149,13 +150,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         watcher.Start();
         UpdateToggleText();
 
-        // 默认开启任务栏全透明(可随时在托盘菜单关闭,退出时自动恢复)。
-        TaskbarTransparency.Apply();
-        if (TaskbarTransparency.LastError != null)
-        {
-            trayIcon.ShowBalloonTip(5000, "任务栏透明不可用",
-                TaskbarTransparency.LastError, ToolTipIcon.Warning);
-        }
+        // 开机登录时 Explorer 和 Win11 XAML 任务栏会分阶段初始化。
+        // 只在任务栏真正就绪后加载透明模块，避免过早注入 Explorer
+        // 导致本次登录期间任务栏保持不透明。
+        startupTransparencyTimer = new System.Windows.Forms.Timer();
+        startupTransparencyTimer.Interval = 2000;
+        startupTransparencyTimer.Tick += OnStartupTransparencyTick;
+        startupTransparencyTimer.Start();
+        DiagnosticLog.Write("Taskbar transparency deferred until taskbar is ready.");
 
         trayIcon.ShowBalloonTip(2500, "GHide 已启动",
             "双击桌面空白处，可隐藏或显示全部桌面图标。",
@@ -182,6 +184,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         bool enable = !taskbarItem.Checked;
         if (enable)
         {
+            startupTransparencyTimer.Stop();
             TaskbarTransparency.Apply();
             if (TaskbarTransparency.LastError != null)
             {
@@ -191,9 +194,31 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         else
         {
+            startupTransparencyTimer.Stop();
             TaskbarTransparency.Restore();
         }
         taskbarItem.Checked = enable;
+    }
+
+    private void OnStartupTransparencyTick(object sender, EventArgs e)
+    {
+        if (!taskbarItem.Checked)
+        {
+            startupTransparencyTimer.Stop();
+            return;
+        }
+
+        if (!TaskbarTransparency.IsReadyForApply())
+            return;
+
+        startupTransparencyTimer.Stop();
+        DiagnosticLog.Write("Taskbar is ready; applying deferred transparency.");
+        TaskbarTransparency.Apply();
+        if (TaskbarTransparency.LastError != null)
+        {
+            trayIcon.ShowBalloonTip(5000, "任务栏透明不可用",
+                TaskbarTransparency.LastError, ToolTipIcon.Warning);
+        }
     }
 
     private void ToggleIcons()
@@ -248,6 +273,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     protected override void ExitThreadCore()
     {
         DiagnosticLog.Write("ExitThreadCore entered.");
+        startupTransparencyTimer.Stop();
+        startupTransparencyTimer.Dispose();
         DesktopIcons.Restore();
         TaskbarTransparency.Restore();
         watcher.Dispose();
@@ -432,6 +459,16 @@ internal static class TaskbarTransparency
     internal static bool IsApplied
     {
         get { return applied; }
+    }
+
+    internal static bool IsReadyForApply()
+    {
+        if (NativeMethods.FindWindow(TaskbarWindowClass, null) == IntPtr.Zero)
+            return false;
+
+        // Win11 的 Shell_TrayWnd 会早于 XAML bridge 出现；只看到外层窗口
+        // 不代表透明模块已可以安全加载。
+        return !IsWindows11() || IsXamlTaskbar();
     }
 
     internal static void Apply()

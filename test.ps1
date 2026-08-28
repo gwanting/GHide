@@ -44,7 +44,7 @@ public static class GHideTestNative
 '@
 
 $fileVersion = (Get-Item -LiteralPath $ExecutablePath).VersionInfo.FileVersion
-Assert-True ($fileVersion -eq '1.3.3.0') 'file version is 1.3.3.0'
+Assert-True ($fileVersion -eq '1.3.4.0') 'file version is 1.3.4.0'
 
 $assembly = [Reflection.Assembly]::LoadFile((Resolve-Path $ExecutablePath).Path)
 $allStatic = [Reflection.BindingFlags]'Static,Public,NonPublic'
@@ -145,9 +145,11 @@ finally {
 }
 
 $taskbarType = $assembly.GetType('TaskbarTransparency', $true)
+$isTaskbarReady = $taskbarType.GetMethod('IsReadyForApply', $allStatic)
 $applyTaskbar = $taskbarType.GetMethod('Apply', $allStatic)
 $restoreTaskbar = $taskbarType.GetMethod('Restore', $allStatic)
 $isAppliedProperty = $taskbarType.GetProperty('IsApplied', $allStatic)
+Assert-True ([bool]$isTaskbarReady.Invoke($null, @())) 'taskbar reports ready before transparency is applied'
 [void]$applyTaskbar.Invoke($null, @())
 Start-Sleep -Milliseconds 300
 Assert-True ([bool]$isAppliedProperty.GetValue($null, @())) 'taskbar transparency applies without error'
