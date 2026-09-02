@@ -44,7 +44,7 @@ public static class GHideTestNative
 '@
 
 $fileVersion = (Get-Item -LiteralPath $ExecutablePath).VersionInfo.FileVersion
-Assert-True ($fileVersion -eq '1.3.4.0') 'file version is 1.3.4.0'
+Assert-True ($fileVersion -eq '1.3.5.0') 'file version is 1.3.5.0'
 
 $assembly = [Reflection.Assembly]::LoadFile((Resolve-Path $ExecutablePath).Path)
 $allStatic = [Reflection.BindingFlags]'Static,Public,NonPublic'
@@ -155,6 +155,10 @@ Start-Sleep -Milliseconds 300
 Assert-True ([bool]$isAppliedProperty.GetValue($null, @())) 'taskbar transparency applies without error'
 [void]$restoreTaskbar.Invoke($null, @())
 Assert-True (-not [bool]$isAppliedProperty.GetValue($null, @())) 'taskbar transparency is restored after test'
+
+$shutdownTaskbar = $taskbarType.GetMethod('Shutdown', $allStatic)
+[void]$shutdownTaskbar.Invoke($null, @())
+Assert-True (-not [bool]$isAppliedProperty.GetValue($null, @())) 'taskbar transparency shutdown leaves no active state'
 
 $logPath = Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'GHide\GHide.log'
 Assert-True (Test-Path -LiteralPath $logPath) 'diagnostic log is created'

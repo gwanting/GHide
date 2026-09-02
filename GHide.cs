@@ -12,9 +12,9 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Double-click desktop blank space to toggle desktop icons")]
 [assembly: System.Reflection.AssemblyProduct("GHide")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright © 2026 Wanting. 保留所有权利")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.3.4")]
-[assembly: System.Reflection.AssemblyVersion("1.3.4.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.4.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.3.5")]
+[assembly: System.Reflection.AssemblyVersion("1.3.5.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.5.0")]
 
 internal static class Program
 {
@@ -276,7 +276,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         startupTransparencyTimer.Stop();
         startupTransparencyTimer.Dispose();
         DesktopIcons.Restore();
-        TaskbarTransparency.Restore();
+        TaskbarTransparency.Shutdown();
         watcher.Dispose();
         trayIcon.Visible = false;
         trayIcon.Dispose();
@@ -452,6 +452,11 @@ internal static class TaskbarTransparency
     private static bool applied;
     private static bool usingInjection;
     private static TaskbarCreatedListener listener;
+    private static System.Windows.Forms.Timer reapplyTimer;
+    private static int reapplyAttempts;
+
+    private const int ReapplyIntervalMilliseconds = 2000;
+    private const int MaxReapplyAttempts = 30;
 
     // 最近一次 Apply() 的失败原因(成功时为 null),供托盘气泡提示用户。
     internal static string LastError { get; private set; }
@@ -554,10 +559,80 @@ internal static class TaskbarTransparency
         applied = false;
     }
 
+    internal static void Shutdown()
+    {
+        Restore();
+
+        if (reapplyTimer != null)
+        {
+            reapplyTimer.Stop();
+            reapplyTimer.Dispose();
+            reapplyTimer = null;
+        }
+        if (listener != null)
+        {
+            listener.Close();
+            listener = null;
+        }
+        if (mapView != IntPtr.Zero)
+        {
+            NativeMethods.UnmapViewOfFile(mapView);
+            mapView = IntPtr.Zero;
+        }
+        if (mapHandle != IntPtr.Zero)
+        {
+            NativeMethods.CloseHandle(mapHandle);
+            mapHandle = IntPtr.Zero;
+        }
+    }
+
     private static void OnTaskbarRecreated()
     {
-        if (applied)
+        if (!applied)
+            return;
+
+        // TaskbarCreated 意味着 Explorer 已重建；旧的注入 DLL 已随旧 Explorer
+        // 退出。必须清除“已应用”的缓存，重置 DLL 就绪标记后再注入新进程。
+        DiagnosticLog.Write("TaskbarCreated received; scheduling transparency reapply.");
+        applied = false;
+        usingInjection = false;
+        WriteField(OffInjected, 0);
+        ScheduleReapply();
+    }
+
+    private static void ScheduleReapply()
+    {
+        if (reapplyTimer == null)
+        {
+            reapplyTimer = new System.Windows.Forms.Timer();
+            reapplyTimer.Interval = ReapplyIntervalMilliseconds;
+            reapplyTimer.Tick += OnReapplyTimerTick;
+        }
+        reapplyAttempts = 0;
+        reapplyTimer.Stop();
+        reapplyTimer.Start();
+    }
+
+    private static void OnReapplyTimerTick(object sender, EventArgs e)
+    {
+        reapplyAttempts++;
+        if (IsReadyForApply())
+        {
+            DiagnosticLog.Write("Taskbar recreation: taskbar ready, reapplying transparency.");
             Apply();
+            if (applied)
+            {
+                reapplyTimer.Stop();
+                return;
+            }
+        }
+
+        if (reapplyAttempts >= MaxReapplyAttempts)
+        {
+            reapplyTimer.Stop();
+            DiagnosticLog.Write("Taskbar recreation: transparency reapply timed out. " +
+                (LastError ?? "Taskbar did not become ready."));
+        }
     }
 
     private static void EnsureListener()
@@ -867,6 +942,11 @@ internal static class TaskbarTransparency
             parameters.Style = 0;
             parameters.ExStyle = WS_EX_TOOLWINDOW;
             CreateHandle(parameters);
+        }
+
+        internal void Close()
+        {
+            DestroyHandle();
         }
 
         protected override void WndProc(ref Message msg)
