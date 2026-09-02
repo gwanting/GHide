@@ -83,4 +83,4 @@ powershell -ExecutionPolicy Bypass -File .\test.ps1
 
 ## 版权
 
-Copyright © 2026 Wanting. 保留所有权利
+Copyright © 2026 Wanting. 本项目按 GPL-3.0 发布。
