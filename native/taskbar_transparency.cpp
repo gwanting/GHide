@@ -31,6 +31,7 @@
 #include <winrt/Windows.UI.Xaml.Shapes.h>
 
 #include <algorithm>
+#include <atomic>
 #include <string>
 #include <thread>
 #include <unordered_set>
@@ -83,6 +84,10 @@ struct TaskbarEntry
 
 // 仅在 XAML UI 线程访问
 static std::vector<TaskbarEntry> g_entries;
+// 共享状态由控制线程读取，视觉树回调在 XAML UI 线程执行。新出现的
+// 背景矩形必须继承当前状态，否则“先收到透明指令、后捕获视觉元素”时会
+// 永久停留在默认外观。
+static std::atomic_bool g_transparentRequested{ false };
 
 // ---- 简单的 native 诊断日志(explorer 进程内) ----
 static void LogNative(const wchar_t* message)
@@ -274,6 +279,15 @@ struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher, IVisualTreeServi
         {
             info.originalFill = nullptr;
         }
+
+        // InitializeXamlDiagnosticsEx 成功与 AdviseVisualTreeChange 完成之间
+        // 存在时序差：主程序可能已写入 state=1，而任务栏矩形稍后才进入
+        // 回调。此处在 UI 线程立即补做应用，避免 entries=0 后不再刷新。
+        if (g_transparentRequested.load())
+        {
+            ApplyTransparent();
+            LogNative(L"Late taskbar background registered; transparency reapplied");
+        }
     }
 
     void Unregister(InstanceHandle handle)
@@ -356,6 +370,7 @@ static DWORD WINAPI ControlThreadProc(LPVOID)
                     have = true;
                     last = p->state;
                     bool transparent = (p->state == 1);
+                    g_transparentRequested.store(transparent);
                     wsys::DispatcherQueue queue = g_queue;
                     if (queue)
                     {

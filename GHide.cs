@@ -12,9 +12,9 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Double-click desktop blank space to toggle desktop icons")]
 [assembly: System.Reflection.AssemblyProduct("GHide")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright © 2026 Wanting. 保留所有权利")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.3.5")]
-[assembly: System.Reflection.AssemblyVersion("1.3.5.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.5.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.3.6")]
+[assembly: System.Reflection.AssemblyVersion("1.3.6.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.6.0")]
 
 internal static class Program
 {
