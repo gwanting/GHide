@@ -12,9 +12,9 @@ using Microsoft.Win32;
 [assembly: System.Reflection.AssemblyDescription("Double-click desktop blank space to toggle desktop icons")]
 [assembly: System.Reflection.AssemblyProduct("GHide")]
 [assembly: System.Reflection.AssemblyCopyright("Copyright © 2026 Wanting. 保留所有权利")]
-[assembly: System.Reflection.AssemblyInformationalVersion("1.3.6")]
-[assembly: System.Reflection.AssemblyVersion("1.3.6.0")]
-[assembly: System.Reflection.AssemblyFileVersion("1.3.6.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("1.3.7")]
+[assembly: System.Reflection.AssemblyVersion("1.3.7.0")]
+[assembly: System.Reflection.AssemblyFileVersion("1.3.7.0")]
 
 internal static class Program
 {
@@ -428,18 +428,22 @@ internal static class TaskbarTransparency
     private const string XamlBridgeClass = "Windows.UI.Composition.DesktopWindowContentBridge";
     // 与注入 DLL (taskbar_transparency.dll) 约定的共享内存名，不得更改：
     // DLL 需在 MSYS2 环境重编译才能同步改名，改名会破坏任务栏透明通信。
-    private const string StateName = @"Local\DesktopIconToggleTaskbarState";
+    private const string StateName = @"Local\GHideTaskbarStateV2";
     private const uint StateMagic = 0x44544954; // 'DITT'
     private const int OffMagic = 0;
     private const int OffState = 4;
     private const int OffInjected = 8;
     private const int OffOwnerPid = 12;
-    private const int StateSize = 16;
+    private const int OffTargetCount = 16;
+    private const int StateSize = 20;
 
     private const int WCA_ACCENT_POLICY = 19;
     private const int ACCENT_DISABLED = 0;
     private const int ACCENT_ENABLE_TRANSPARENTGRADIENT = 2;
     private const int WS_EX_TOOLWINDOW = 0x80;
+    private const int WH_CALLWNDPROC = 4;
+    private const uint WM_NULL = 0;
+    private const uint SMTO_ABORTIFHUNG = 0x0002;
 
     // 注入用进程权限:CREATE_THREAD|QUERY_INFORMATION|VM_OPERATION|VM_WRITE|VM_READ
     private const uint ProcessAllAccess = 0x043A;
@@ -507,6 +511,8 @@ internal static class TaskbarTransparency
             if (!IsDllLoadedInExplorer())
             {
                 DiagnosticLog.Write("Taskbar transparency: injecting into explorer...");
+                WriteField(OffInjected, 0);
+                WriteField(OffTargetCount, 0);
                 if (!InjectIntoExplorer())
                 {
                     LastError = "DLL 注入 explorer.exe 失败（可能被安全软件拦截）。";
@@ -520,9 +526,20 @@ internal static class TaskbarTransparency
                     DiagnosticLog.Write("Taskbar transparency: DLL did not report ready.");
             }
             WriteField(OffState, 1);
+            for (int i = 0; i < 100 && ReadField(OffTargetCount) == 0; i++)
+                Thread.Sleep(100);
+            if (ReadField(OffTargetCount) == 0)
+            {
+                WriteField(OffState, 0);
+                usingInjection = false;
+                LastError = "透明模块已加载，但未找到任务栏背景。请从托盘重试。";
+                DiagnosticLog.Write("Taskbar transparency: no visual targets were captured.");
+                return;
+            }
             applied = true;
             EnsureListener();
-            DiagnosticLog.Write("Taskbar transparency applied (XAML injection).");
+            DiagnosticLog.Write("Taskbar transparency applied (XAML injection), targets=" +
+                ReadField(OffTargetCount));
         }
         else
         {
@@ -597,6 +614,7 @@ internal static class TaskbarTransparency
         applied = false;
         usingInjection = false;
         WriteField(OffInjected, 0);
+        WriteField(OffTargetCount, 0);
         ScheduleReapply();
     }
 
@@ -667,6 +685,7 @@ internal static class TaskbarTransparency
                 WriteField(OffMagic, StateMagic);
                 WriteField(OffState, 0);
                 WriteField(OffInjected, 0);
+                WriteField(OffTargetCount, 0);
             }
             // 记录主进程 PID,供注入 DLL 监控"主程序退出则还原任务栏"。
             WriteField(OffOwnerPid, (uint)Process.GetCurrentProcess().Id);
@@ -751,10 +770,10 @@ internal static class TaskbarTransparency
 
     private static bool InjectIntoExplorer()
     {
-        Process[] explorers = Process.GetProcessesByName("explorer");
-        if (explorers.Length == 0)
+        IntPtr taskbar = NativeMethods.FindWindow(TaskbarWindowClass, null);
+        if (taskbar == IntPtr.Zero)
         {
-            DiagnosticLog.Write("Taskbar transparency: explorer process not found.");
+            DiagnosticLog.Write("Taskbar transparency: taskbar window not found.");
             return false;
         }
 
@@ -766,19 +785,63 @@ internal static class TaskbarTransparency
             return false;
         }
 
+        IntPtr localModule = NativeMethods.LoadLibrary(dllPath);
+        if (localModule != IntPtr.Zero)
+        {
+            try
+            {
+                IntPtr hookProc = NativeMethods.GetProcAddress(localModule, "GHideTaskbarHookProc");
+                uint processId;
+                uint taskbarThread = NativeMethods.GetWindowThreadProcessId(taskbar, out processId);
+                if (hookProc != IntPtr.Zero && taskbarThread != 0)
+                {
+                    IntPtr hook = NativeMethods.SetWindowsHookExNative(
+                        WH_CALLWNDPROC, hookProc, localModule, taskbarThread);
+                    if (hook != IntPtr.Zero)
+                    {
+                        try
+                        {
+                            UIntPtr ignored;
+                            NativeMethods.SendMessageTimeout(taskbar, WM_NULL, IntPtr.Zero,
+                                IntPtr.Zero, SMTO_ABORTIFHUNG, 2000, out ignored);
+                            for (int i = 0; i < 50 && ReadField(OffInjected) == 0; i++)
+                                Thread.Sleep(100);
+                            if (ReadField(OffInjected) != 0)
+                            {
+                                DiagnosticLog.Write("Taskbar transparency: taskbar-thread hook injection succeeded.");
+                                return true;
+                            }
+                        }
+                        finally
+                        {
+                            NativeMethods.UnhookWindowsHookEx(hook);
+                        }
+                    }
+                }
+            }
+            finally
+            {
+                NativeMethods.FreeLibrary(localModule);
+            }
+        }
+
+        DiagnosticLog.Write("Taskbar transparency: hook injection failed; trying remote-thread fallback.");
+        return InjectWithRemoteThread(dllPath);
+    }
+
+    private static bool InjectWithRemoteThread(string dllPath)
+    {
+        Process[] explorers = Process.GetProcessesByName("explorer");
+        if (explorers.Length == 0)
+            return false;
         IntPtr process = NativeMethods.OpenProcess(ProcessAllAccess, false, (uint)explorers[0].Id);
         if (process == IntPtr.Zero)
-        {
-            DiagnosticLog.Write("Taskbar transparency: OpenProcess failed, error=" +
-                Marshal.GetLastWin32Error());
             return false;
-        }
         try
         {
             byte[] pathBytes = System.Text.Encoding.Unicode.GetBytes(dllPath + "\0");
-            IntPtr remote = NativeMethods.VirtualAllocEx(
-                process, IntPtr.Zero, new UIntPtr((uint)pathBytes.Length),
-                MemCommitReserve, PageReadWrite);
+            IntPtr remote = NativeMethods.VirtualAllocEx(process, IntPtr.Zero,
+                new UIntPtr((uint)pathBytes.Length), MemCommitReserve, PageReadWrite);
             if (remote == IntPtr.Zero)
                 return false;
             try
@@ -787,12 +850,11 @@ internal static class TaskbarTransparency
                 if (!NativeMethods.WriteProcessMemory(process, remote, pathBytes,
                     new UIntPtr((uint)pathBytes.Length), out written))
                     return false;
-
                 IntPtr kernel32 = NativeMethods.GetModuleHandle("kernel32.dll");
                 IntPtr loadLibrary = NativeMethods.GetProcAddress(kernel32, "LoadLibraryW");
                 uint threadId;
-                IntPtr thread = NativeMethods.CreateRemoteThread(
-                    process, IntPtr.Zero, UIntPtr.Zero, loadLibrary, remote, 0, out threadId);
+                IntPtr thread = NativeMethods.CreateRemoteThread(process, IntPtr.Zero,
+                    UIntPtr.Zero, loadLibrary, remote, 0, out threadId);
                 if (thread == IntPtr.Zero)
                     return false;
                 NativeMethods.WaitForSingleObject(thread, 10000);
@@ -1546,6 +1608,9 @@ internal static class NativeMethods
     [DllImport("user32.dll", SetLastError = true)]
     internal static extern IntPtr SetWindowsHookEx(int hookId, LowLevelMouseProc callback, IntPtr module, uint threadId);
 
+    [DllImport("user32.dll", EntryPoint = "SetWindowsHookExW", SetLastError = true)]
+    internal static extern IntPtr SetWindowsHookExNative(int hookId, IntPtr callback, IntPtr module, uint threadId);
+
     [DllImport("oleacc.dll")]
     private static extern int AccessibleObjectFromWindow(
         IntPtr window,
@@ -1571,6 +1636,13 @@ internal static class NativeMethods
     [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
     internal static extern IntPtr GetModuleHandle(string moduleName);
 
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern IntPtr LoadLibrary(string fileName);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    internal static extern bool FreeLibrary(IntPtr module);
+
     [DllImport("user32.dll")]
     internal static extern uint GetDoubleClickTime();
 
@@ -1579,6 +1651,13 @@ internal static class NativeMethods
 
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     internal static extern IntPtr FindWindowEx(IntPtr parent, IntPtr childAfter, string className, string windowName);
+
+    [DllImport("user32.dll")]
+    internal static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    internal static extern IntPtr SendMessageTimeout(IntPtr window, uint message,
+        IntPtr wParam, IntPtr lParam, uint flags, uint timeout, out UIntPtr result);
 
     [DllImport("user32.dll")]
     [return: MarshalAs(UnmanagedType.Bool)]

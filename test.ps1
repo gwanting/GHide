@@ -44,7 +44,7 @@ public static class GHideTestNative
 '@
 
 $fileVersion = (Get-Item -LiteralPath $ExecutablePath).VersionInfo.FileVersion
-Assert-True ($fileVersion -eq '1.3.6.0') 'file version is 1.3.6.0'
+Assert-True ($fileVersion -eq '1.3.7.0') 'file version is 1.3.7.0'
 
 $assembly = [Reflection.Assembly]::LoadFile((Resolve-Path $ExecutablePath).Path)
 $allStatic = [Reflection.BindingFlags]'Static,Public,NonPublic'

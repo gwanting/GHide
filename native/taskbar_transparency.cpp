@@ -46,13 +46,14 @@ namespace wuxs = winrt::Windows::UI::Xaml::Shapes;
 
 // ---- 与主程序(GHide)约定的共享内存协议 ----
 #define STATE_MAGIC 0x44544954u // 'DITT'
-#define STATE_NAME L"Local\\DesktopIconToggleTaskbarState"
+#define STATE_NAME L"Local\\GHideTaskbarStateV2"
 struct SharedState
 {
     DWORD magic;   // STATE_MAGIC
     DWORD state;   // 0 = 恢复默认, 1 = 全透明
     DWORD injected; // DLL 初始化成功后置 1
     DWORD ownerPid; // 主程序进程 ID(DLL 据此检测主程序退出并还原)
+    DWORD targetCount; // 已捕获的任务栏背景数量
 };
 
 // 本 DLL 提供给 XAML Diagnostics 实例化的 site 的 CLSID
@@ -88,6 +89,18 @@ static std::vector<TaskbarEntry> g_entries;
 // 背景矩形必须继承当前状态，否则“先收到透明指令、后捕获视觉元素”时会
 // 永久停留在默认外观。
 static std::atomic_bool g_transparentRequested{ false };
+static std::atomic_uint g_targetCount{ 0 };
+
+static void UpdateTargetCount()
+{
+    unsigned int count = 0;
+    for (const auto& entry : g_entries)
+    {
+        if (entry.background.control || entry.border.control)
+            ++count;
+    }
+    g_targetCount.store(count);
+}
 
 // ---- 简单的 native 诊断日志(explorer 进程内) ----
 static void LogNative(const wchar_t* message)
@@ -288,6 +301,7 @@ struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher, IVisualTreeServi
             ApplyTransparent();
             LogNative(L"Late taskbar background registered; transparency reapplied");
         }
+        UpdateTargetCount();
     }
 
     void Unregister(InstanceHandle handle)
@@ -302,6 +316,7 @@ struct VisualTreeWatcher : winrt::implements<VisualTreeWatcher, IVisualTreeServi
             else
                 ++it;
         }
+        UpdateTargetCount();
     }
 };
 
@@ -317,18 +332,19 @@ static DWORD WINAPI ControlThreadProc(LPVOID)
     DWORD lastOwner = 0;
     // 持续持有共享内存句柄:即使主程序退出(句柄关闭),对象仍存活,
     // 使 DLL 能够检测 ownerPid 进程消亡并还原任务栏。
-    HANDLE map = OpenFileMappingW(FILE_MAP_READ, FALSE, STATE_NAME);
+    HANDLE map = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, STATE_NAME);
     for (;;)
     {
         if (!map)
         {
-            map = OpenFileMappingW(FILE_MAP_READ, FALSE, STATE_NAME);
+            map = OpenFileMappingW(FILE_MAP_ALL_ACCESS, FALSE, STATE_NAME);
         }
         if (map)
         {
-            SharedState* p = static_cast<SharedState*>(MapViewOfFile(map, FILE_MAP_READ, 0, 0, 0));
+            SharedState* p = static_cast<SharedState*>(MapViewOfFile(map, FILE_MAP_ALL_ACCESS, 0, 0, 0));
             if (p && p->magic == STATE_MAGIC)
             {
+                p->targetCount = g_targetCount.load();
                 // 主程序进程退出检测:进程已不存在则还原任务栏,防止强杀/崩溃残留透明。
                 if (p->ownerPid != lastOwner)
                 {
@@ -459,6 +475,12 @@ extern "C" __declspec(dllexport) HRESULT WINAPI DllGetClassObject(REFCLSID rclsi
         return factory.as(riid, ppv);
     }
     return CLASS_E_CLASSNOTAVAILABLE;
+}
+
+extern "C" __declspec(dllexport) LRESULT CALLBACK GHideTaskbarHookProc(
+    int code, WPARAM wParam, LPARAM lParam)
+{
+    return CallNextHookEx(nullptr, code, wParam, lParam);
 }
 
 // ---- 初始化线程(由 DllMain 在 explorer 中启动) ----
